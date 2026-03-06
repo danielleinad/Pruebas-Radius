@@ -1,0 +1,230 @@
+1. Clonar el repositorio
+
+bash
+git clone https://github.com/TU_USUARIO/radius-wifi.git
+cd radius-wifi
+
+En Windows puedes hacer esto desde PowerShell, CMD o desde Git Bash.
+2. Primera ejecución (inicializar configuración)
+
+    Asegúrate de estar en el directorio del proyecto:
+
+    bash
+    cd radius-wifi
+
+    Levanta el contenedor por primera vez:
+
+    bash
+    docker compose up -d
+
+    Copia la configuración de FreeRADIUS al host:
+
+    bash
+    docker cp freeradius:/etc/freeradius ./raddb
+
+    Reinicia el contenedor para que use la configuración desde el host:
+
+    bash
+    docker restart freeradius
+
+A partir de ahora puedes editar los archivos en raddb/ directamente en tu sistema.
+3. Definir clientes RADIUS (tu AP / router)
+
+Edita raddb/clients.conf y añade una entrada para tu punto de acceso:
+
+text
+client wifi_ap {
+    ipaddr = 192.168.1.10       # IP del AP o router
+    secret = radiussecret       # clave compartida RADIUS
+    shortname = wifi_ap
+}
+
+    ipaddr: dirección IP del AP vista desde el servidor.
+
+    secret: clave compartida que debes configurar igual en el AP.
+
+Guarda el archivo y reinicia el contenedor:
+
+bash
+docker restart freeradius
+
+4. Crear usuarios para WiFi
+
+Edita el archivo raddb/users (o raddb/mods-config/files/authorize en algunas versiones) y añade tus usuarios:
+
+text
+juan   Cleartext-Password := "clave123"
+       Reply-Message := "Bienvenido Juan"
+
+maria  Cleartext-Password := "mariawifi"
+       Reply-Message := "Bienvenida Maria"
+
+Cada entrada define usuario y contraseña que se usarán para conectarse al WiFi Enterprise.[web:21]
+
+Reinicia el contenedor después de los cambios:
+
+bash
+docker restart freeradius
+
+5. Habilitar y configurar EAP (WPA2/WPA3-Enterprise)
+
+Para WPA2/WPA3-Enterprise se utiliza 802.1X/EAP (recomendado EAP-PEAP con MSCHAPv2).[web:21][web:18]
+
+    Edita raddb/mods-available/eap y asegúrate de que contenga algo como:
+
+    text
+    eap {
+        default_eap_type = peap
+        timer_expire     = 60
+
+        tls-config tls-common {
+            private_key_file = ${certdir}/server.key
+            certificate_file = ${certdir}/server.pem
+            ca_file = ${cadir}/ca.pem
+        }
+    }
+
+    Los certificados por defecto de FreeRADIUS son válidos para pruebas.[web:18][web:5]
+
+    Habilita el módulo eap (si aún no lo está):
+
+    bash
+    cd raddb/mods-enabled
+    ln -s ../mods-available/eap eap
+
+    En raddb/sites-enabled/default, comprueba que:
+
+        En authorize aparezca:
+
+        text
+        authorize {
+            ...
+            files
+            eap
+            ...
+        }
+
+        En authenticate aparezca:
+
+        text
+        authenticate {
+            ...
+            eap
+            ...
+        }
+
+Reinicia el contenedor:
+
+bash
+docker restart freeradius
+
+6. Probar RADIUS desde consola (radtest)
+Linux
+
+Instala las utilidades de FreeRADIUS (nombre del paquete puede variar):
+
+bash
+sudo apt install freeradius-utils    # Debian/Ubuntu
+# o
+sudo dnf install freeradius-utils    # Fedora
+
+Ejecuta una prueba:
+
+bash
+radtest juan clave123 127.0.0.1 0 radiussecret
+
+    juan / clave123: usuario/clave definidos en users.
+
+    radiussecret: debe coincidir con el secreto configurado en clients.conf.
+
+    127.0.0.1: IP local (si pruebas desde el mismo host).
+
+Deberías ver una respuesta Access-Accept si todo está correcto.[web:18][web:21]
+Windows
+
+    Puedes usar WSL (Ubuntu u otra distro) e instalar freeradius-utils dentro de WSL y ejecutar radtest igual que en Linux.
+
+    Alternativamente, puedes probar directamente desde un cliente WiFi (ver siguiente sección).
+
+7. Configurar el punto de acceso / router WiFi
+
+En la interfaz web de tu AP (depende del modelo):
+
+    Configura el SSID (por ejemplo WIFI_EMPRESA).
+
+    Tipo de seguridad:
+
+        Selecciona WPA2-Enterprise, WPA2/WPA3-Enterprise o similar.[web:17][web:16]
+
+    Configuración RADIUS:
+
+        Servidor RADIUS: IP del host donde corre Docker (ej. 192.168.1.20).
+
+        Puerto autenticación: 1812.
+
+        Clave compartida: radiussecret (la misma de clients.conf).
+
+        (Opcional) Servidor de contabilidad: misma IP con puerto 1813 y mismo secreto.
+
+Guarda cambios y reinicia el AP si es necesario.
+8. Probar desde un cliente WiFi
+
+En un portátil, móvil o ESP32 (como cliente):
+
+    Busca el SSID configurado (ej. WIFI_EMPRESA).
+
+    Cuando pida credenciales, usa:
+
+        Usuario: juan
+
+        Contraseña: clave123
+
+    Si el dispositivo pregunta por confiar en el certificado del servidor, en un entorno de pruebas puedes aceptarlo de forma manual.[web:27][web:18]
+
+Si la conexión se establece, la configuración de RADIUS + AP es correcta.
+9. Ver logs de FreeRADIUS
+
+Para ver lo que ocurre en detalle:
+
+bash
+docker logs -f freeradius
+
+Si quieres más verbosidad, puedes cambiar el comando en docker-compose.yml a:
+
+text
+command: ["freeradius", "-f", "-l", "stdout", "-X"]
+
+-X ejecuta FreeRADIUS en modo debug (muy útil para diagnóstico).[web:44][web:5]
+10. Comandos útiles
+
+    Iniciar servicios:
+
+    bash
+    docker compose up -d
+
+    Detener servicios:
+
+    bash
+    docker compose down
+
+    Ver estado de contenedores:
+
+    bash
+    docker ps
+
+    Entrar a la consola del contenedor:
+
+    bash
+    docker exec -it freeradius bash
+
+11. Notas y recomendaciones
+
+    No expongas tu servidor RADIUS a Internet sin antes endurecer la seguridad (certificados propios, firewall, restricciones de IP, etc.).[web:9]
+
+    Para un entorno de producción, genera tus propios certificados y distribuye la CA a los clientes.
+
+    Puedes versionar y compartir este proyecto directamente desde GitHub; no es necesario comprimirlo (ZIP), basta con usar git push para subir cambios.[web:29]
+
+text
+
+¿Quieres que también te genere un `.gitignore` optimizado para este repo (Linux/Windows + Docker) para copiarlo junto al README?
